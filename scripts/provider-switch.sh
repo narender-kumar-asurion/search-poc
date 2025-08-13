@@ -252,7 +252,7 @@ show_test_urls() {
             info "🔍 Meilisearch Direct:"
             info "   Dashboard: http://localhost:7700"
             info "   Health: curl http://localhost:7700/health"
-            info "   Indexes: curl http://localhost:7700/indexes -H \"Authorization: Bearer your-master-key\""
+            info "   Indexes: curl http://localhost:7700/indexes -H \"Authorization: Bearer dev-master-key-change-in-production\""
             ;;
     esac
     

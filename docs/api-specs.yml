@@ -1,0 +1,773 @@
+openapi: 3.1.0
+info:
+  title: Search API (Adapter Pattern • Typesense/Meilisearch Agnostic)
+  version: 1.0.0
+  description: >
+    Stable domain-facing API for classic search, lookups, suggestions, facets,
+    geo/zip helpers, indexing/admin, and observability. Upstream code never
+    depends on provider specifics; adapters translate to Typesense/Meilisearch.
+
+servers:
+  - url: /v1
+
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
+
+tags:
+  - name: Search
+  - name: Suggest
+  - name: Facets
+  - name: Documents
+  - name: Geo
+  - name: Indexing
+  - name: Observability
+  - name: Health
+
+paths:
+  /search:
+    post:
+      tags: [Search]
+      summary: Generic search across a logical index alias
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchRequest' }
+            examples:
+              claimsNameFacet:
+                value:
+                  index: claims
+                  query:
+                    text: "john doe"
+                    filters:
+                      and:
+                        - { field: status, op: in, value: [OPEN, PENDING] }
+                    facets: [ { field: status, limit: 10 } ]
+                    pagination: { page: 1, perPage: 20 }
+                    relevance: { mode: text, weights: { customer_name: 2.0 } }
+                    highlight: { fields: [customer_name] }
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /claims/search:
+    post:
+      tags: [Search]
+      summary: Domain shortcut for Claims search with sane defaults
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query: { $ref: '#/components/schemas/SearchQuery' }
+              required: [query]
+      responses:
+        '200': { content: { application/json: { schema: { $ref: '#/components/schemas/SearchResult' } } } }
+
+  /agreements/search:
+    post:
+      tags: [Search]
+      summary: Domain shortcut for Agreements search with date validations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query: { $ref: '#/components/schemas/SearchQuery' }
+              required: [query]
+            examples:
+              agreementByDate:
+                value:
+                  query:
+                    filters:
+                      and:
+                        - { range: { field: start_date, gte: "2025-01-01" } }
+                        - { range: { field: end_date, lte: "2025-06-30" } }
+                        - { field: agreement_number, op: eq, value: "AGR-7788" }
+                    sort: [ { field: start_date, order: desc } ]
+                    pagination: { page: 1, perPage: 50 }
+      responses:
+        '200': { content: { application/json: { schema: { $ref: '#/components/schemas/SearchResult' } } } }
+
+  /indexes/{index}/documents/{id}:
+    get:
+      tags: [Documents]
+      summary: Exact lookup by ID
+      parameters:
+        - in: path
+          name: index
+          required: true
+          schema: { type: string }
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Found
+          content: { application/json: { schema: { type: object, additionalProperties: true } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /indexes/{index}/documents/bulk-get:
+    post:
+      tags: [Documents]
+      summary: Bulk lookup by IDs
+      parameters:
+        - in: path
+          name: index
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkGetRequest' }
+      responses:
+        '200': { content: { application/json: { schema: { $ref: '#/components/schemas/BulkGetResponse' } } } }
+
+  /suggest:
+    post:
+      tags: [Suggest]
+      summary: Autocomplete / suggestions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SuggestRequest' }
+      responses:
+        '200':
+          content: { application/json: { schema: { $ref: '#/components/schemas/SuggestResponse' } } }
+
+  /facets:
+    post:
+      tags: [Facets]
+      summary: Facet-only query for fast filter UIs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FacetOnlyRequest' }
+      responses:
+        '200':
+          content: { application/json: { schema: { $ref: '#/components/schemas/FacetOnlyResponse' } } }
+
+  /geo/nearest-zip:
+    post:
+      tags: [Geo]
+      summary: Resolve nearest zipcodes (for zipRadius searches)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                zip: { type: string, pattern: '^[0-9A-Za-z\-]{3,10}$' }
+                k: { type: integer, minimum: 1, maximum: 100, default: 10 }
+              required: [zip]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { zips: { type: array, items: { type: string } } }
+
+  /geo/zip/{zip}:
+    get:
+      tags: [Geo]
+      summary: Resolve a zip/postal code to lat/lon
+      parameters:
+        - in: path
+          name: zip
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  zip: { type: string }
+                  lat: { type: number }
+                  lon: { type: number }
+
+  /search/metrics:
+    get:
+      tags: [Observability]
+      summary: Basic SLI metrics
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  qps: { type: number }
+                  p50Ms: { type: number }
+                  p95Ms: { type: number }
+                  p99Ms: { type: number }
+                  errorsPerMinute: { type: number }
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      responses:
+        '200': { description: OK }
+
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe (checks adapter connectivity)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  provider: { type: string }
+
+  /indexes:
+    get:
+      tags: [Indexing]
+      summary: List logical indexes and active versions
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    index: { type: string }
+                    activeVersion: { type: integer }
+                    versions: { type: array, items: { type: integer } }
+
+  /indexes/{index}/schema:
+    put:
+      tags: [Indexing]
+      summary: Upsert schema & settings for an index alias (versioned)
+      parameters:
+        - in: path
+          name: index
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SchemaDefinition' }
+      responses:
+        '204': { description: Updated }
+
+  /indexes/{index}/synonyms:
+    put:
+      tags: [Indexing]
+      summary: Upsert synonyms
+      parameters:
+        - in: path
+          name: index
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties:
+                type: array
+                items: { type: string }
+      responses:
+        '204': { description: Updated }
+
+  /indexes/{index}/curations:
+    put:
+      tags: [Indexing]
+      summary: Upsert pin/hide rules (curations)
+      parameters:
+        - in: path
+          name: index
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pin: { type: array, items: { type: string } }
+                hide: { type: array, items: { type: string } }
+      responses:
+        '204': { description: Updated }
+
+  /indexes/{index}/documents/bulk:
+    post:
+      tags: [Indexing]
+      summary: Bulk upsert documents (idempotent)
+      parameters:
+        - in: path
+          name: index
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkIngestRequest' }
+      responses:
+        '202': { description: Accepted }
+
+  /indexes/{index}/documents/delete-bulk:
+    post:
+      tags: [Indexing]
+      summary: Bulk delete documents by IDs
+      parameters:
+        - in: path
+          name: index
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: string } }
+              required: [ids]
+      responses:
+        '202': { description: Accepted }
+
+  /indexes/{index}/reindex:
+    post:
+      tags: [Indexing]
+      summary: Start blue/green reindex into target version
+      parameters:
+        - in: path
+          name: index
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetVersion: { type: integer }
+                strategy: { type: string, enum: [blueGreen] }
+                backfill: { type: string, enum: [streaming, batch] }
+              required: [targetVersion]
+      responses:
+        '202': { description: Reindex started }
+
+  /indexes/{index}/alias/switch:
+    post:
+      tags: [Indexing]
+      summary: Atomically switch alias to a specific version
+      parameters:
+        - in: path
+          name: index
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                toVersion: { type: integer }
+              required: [toVersion]
+      responses:
+        '204': { description: Switched }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    RateLimited:
+      description: Rate limited
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ServerError:
+      description: Server error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  schemas:
+    SearchRequest:
+      type: object
+      required: [index, query]
+      properties:
+        index: { type: string, description: Logical alias (e.g., claims, agreements) }
+        query: { $ref: '#/components/schemas/SearchQuery' }
+
+    SearchQuery:
+      type: object
+      properties:
+        text: { type: string, description: Free text }
+        fields:
+          type: object
+          properties:
+            include: { type: array, items: { type: string } }
+            exclude: { type: array, items: { type: string } }
+        filters: { $ref: '#/components/schemas/Filter' }
+        sort:
+          type: array
+          items: { $ref: '#/components/schemas/Sort' }
+        facets:
+          type: array
+          items: { $ref: '#/components/schemas/FacetRequest' }
+        geo: { $ref: '#/components/schemas/Geo' }
+        highlight: { $ref: '#/components/schemas/Highlight' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+        cursor:
+          type: [string, 'null']
+          description: Use instead of pagination for cursor-based paging
+        relevance: { $ref: '#/components/schemas/Relevance' }
+        distinct:
+          type: object
+          properties:
+            field: { type: string }
+
+    Sort:
+      type: object
+      required: [field, order]
+      properties:
+        field: { type: string }
+        order: { type: string, enum: [asc, desc] }
+
+    Pagination:
+      type: object
+      required: [page, perPage]
+      properties:
+        page: { type: integer, minimum: 1 }
+        perPage: { type: integer, minimum: 1, maximum: 1000 }
+
+    FacetRequest:
+      type: object
+      required: [field]
+      properties:
+        field: { type: string }
+        limit: { type: integer, minimum: 1, maximum: 200, default: 10 }
+
+    Highlight:
+      type: object
+      properties:
+        fields: { type: array, items: { type: string } }
+        preTag: { type: string, default: "<em>" }
+        postTag: { type: string, default: "</em>" }
+        snippetLength: { type: integer, default: 50 }
+
+    Relevance:
+      type: object
+      properties:
+        mode: { type: string, enum: [text, keyword, hybrid], default: text }
+        weights:
+          type: object
+          additionalProperties: { type: number }
+        typoTolerance: { type: string, enum: [off, low, medium, high], default: medium }
+        fuzzy: { type: boolean, default: true }
+        prefix: { type: string, enum: [off, auto, full], default: auto }
+
+    # Filters (recursive)
+    Filter:
+      oneOf:
+        - $ref: '#/components/schemas/FieldFilter'
+        - $ref: '#/components/schemas/RangeFilter'
+        - $ref: '#/components/schemas/AndFilter'
+        - $ref: '#/components/schemas/OrFilter'
+        - $ref: '#/components/schemas/NotFilter'
+
+    FieldFilter:
+      type: object
+      required: [field, op]
+      properties:
+        field: { type: string }
+        op:
+          type: string
+          enum: [eq, ne, in, nin, contains, prefix, exists]
+        value:
+          description: Optional when op=exists
+          oneOf:
+            - type: string
+            - type: number
+            - type: boolean
+            - type: array
+              items:
+                oneOf:
+                  - type: string
+                  - type: number
+                  - type: boolean
+
+    RangeFilter:
+      type: object
+      required: [range]
+      properties:
+        range:
+          type: object
+          required: [field]
+          properties:
+            field: { type: string }
+            gte: { type: number }
+            lte: { type: number }
+            gt: { type: number }
+            lt: { type: number }
+
+    AndFilter:
+      type: object
+      required: [and]
+      properties:
+        and:
+          type: array
+          items: { $ref: '#/components/schemas/Filter' }
+
+    OrFilter:
+      type: object
+      required: [or]
+      properties:
+        or:
+          type: array
+          items: { $ref: '#/components/schemas/Filter' }
+
+    NotFilter:
+      type: object
+      required: [not]
+      properties:
+        not: { $ref: '#/components/schemas/Filter' }
+
+    Geo:
+      oneOf:
+        - $ref: '#/components/schemas/GeoRadius'
+        - $ref: '#/components/schemas/GeoBbox'
+        - $ref: '#/components/schemas/GeoZipRadius'
+      discriminator:
+        propertyName: mode
+        mapping:
+          radius: '#/components/schemas/GeoRadius'
+          bbox: '#/components/schemas/GeoBbox'
+          zipRadius: '#/components/schemas/GeoZipRadius'
+
+    GeoRadius:
+      type: object
+      required: [mode, center, radiusKm]
+      properties:
+        mode: { type: string, const: radius }
+        center:
+          type: object
+          required: [lat, lon]
+          properties:
+            lat: { type: number }
+            lon: { type: number }
+        radiusKm: { type: number, minimum: 0 }
+
+    GeoBbox:
+      type: object
+      required: [mode, topLeft, bottomRight]
+      properties:
+        mode: { type: string, const: bbox }
+        topLeft:
+          type: object
+          required: [lat, lon]
+          properties: { lat: { type: number }, lon: { type: number } }
+        bottomRight:
+          type: object
+          required: [lat, lon]
+          properties: { lat: { type: number }, lon: { type: number } }
+
+    GeoZipRadius:
+      type: object
+      required: [mode, zip, radiusKm]
+      properties:
+        mode: { type: string, const: zipRadius }
+        zip: { type: string }
+        radiusKm: { type: number }
+
+    Hit:
+      type: object
+      required: [id, document]
+      properties:
+        id: { type: string }
+        score: { type: number }
+        distanceKm: { type: number }
+        document:
+          type: object
+          additionalProperties: true
+        highlights:
+          type: object
+          additionalProperties: { type: string }
+
+    FacetBucket:
+      type: object
+      properties:
+        value: { type: string }
+        count: { type: integer }
+
+    SearchResult:
+      type: object
+      properties:
+        meta:
+          type: object
+          properties:
+            tookMs: { type: number }
+            provider: { type: string }
+            total: { type: integer }
+            page: { type: integer }
+            perPage: { type: integer }
+            nextCursor: { type: [string, 'null'] }
+        hits:
+          type: array
+          items: { $ref: '#/components/schemas/Hit' }
+        facets:
+          type: object
+          additionalProperties:
+            type: array
+            items: { $ref: '#/components/schemas/FacetBucket' }
+
+    SuggestRequest:
+      type: object
+      required: [index, q, fields]
+      properties:
+        index: { type: string }
+        q: { type: string }
+        fields: { type: array, items: { type: string } }
+        limit: { type: integer, default: 8 }
+        filters: { $ref: '#/components/schemas/Filter' }
+
+    SuggestResponse:
+      type: object
+      properties:
+        suggestions:
+          type: array
+          items: { type: string }
+
+    FacetOnlyRequest:
+      type: object
+      required: [index, facets]
+      properties:
+        index: { type: string }
+        q: { type: string, default: "" }
+        facets:
+          type: array
+          items: { type: string }
+        filters: { $ref: '#/components/schemas/Filter' }
+        limit: { type: integer, default: 20 }
+
+    FacetOnlyResponse:
+      type: object
+      properties:
+        facets:
+          type: object
+          additionalProperties:
+            type: array
+            items: { $ref: '#/components/schemas/FacetBucket' }
+
+    BulkGetRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          items: { type: string }
+
+    BulkGetResponse:
+      type: object
+      properties:
+        documents:
+          type: array
+          items: { type: object, additionalProperties: true }
+
+    SchemaDefinition:
+      type: object
+      required: [version, fields]
+      properties:
+        version: { type: integer }
+        fields:
+          type: array
+          items:
+            type: object
+            required: [name, type]
+            properties:
+              name: { type: string }
+              type: { type: string, enum: [keyword, text, number, datetime, geopoint, boolean] }
+              required: { type: boolean, default: false }
+              facet: { type: boolean, default: false }
+              sort: { type: boolean, default: false }
+        settings:
+          type: object
+          properties:
+            searchable: { type: array, items: { type: string } }
+            filterable: { type: array, items: { type: string } }
+            sortable: { type: array, items: { type: string } }
+            distinct: { type: string }
+            synonyms:
+              type: object
+              additionalProperties:
+                type: array
+                items: { type: string }
+            stopWords: { type: array, items: { type: string } }
+            typoTolerance: { type: string, enum: [off, low, medium, high] }
+            ranking:
+              type: array
+              items: { type: string }
+
+    BulkIngestRequest:
+      type: object
+      required: [op, idField, documents]
+      properties:
+        op: { type: string, enum: [upsert] }
+        idField: { type: string }
+        idempotencyKey: { type: string }
+        documents:
+          type: array
+          items: { type: object, additionalProperties: true }
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: INVALID_FILTER }
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
+            traceId: { type: string }

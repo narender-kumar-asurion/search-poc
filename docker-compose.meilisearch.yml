@@ -11,7 +11,7 @@ services:
     ports:
       - "7700:7700"
     environment:
-      - MEILI_MASTER_KEY=your-master-key
+      - MEILI_MASTER_KEY=dev-master-key-change-in-production
       - MEILI_ENV=development
       - MEILI_LOG_LEVEL=INFO
       - MEILI_DB_PATH=/meili_data
@@ -40,7 +40,7 @@ services:
       - MEILISEARCH_HOST=meilisearch
       - MEILISEARCH_PORT=7700
       - MEILISEARCH_PROTOCOL=http
-      - MEILISEARCH_MASTER_KEY=your-master-key
+      - MEILISEARCH_MASTER_KEY=dev-master-key-change-in-production
       - MEILISEARCH_INDEX=software_stack_components
       - MEILISEARCH_TIMEOUT=5
     depends_on:
