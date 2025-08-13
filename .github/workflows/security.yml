@@ -1,0 +1,350 @@
+name: Security Scanning
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * 1' # Weekly on Mondays at 2 AM UTC
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  # Job 1: Dependency Vulnerability Scanning
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit (Backend)
+        run: |
+          npm audit --audit-level=low --json > backend-audit.json || true
+          npm audit --audit-level=moderate --parseable | head -20
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Run npm audit (Frontend)
+        run: |
+          cd frontend
+          npm audit --audit-level=low --json > ../frontend-audit.json || true
+          npm audit --audit-level=moderate --parseable | head -20
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v3
+        with:
+          name: dependency-audit-results
+          path: |
+            backend-audit.json
+            frontend-audit.json
+
+  # Job 2: Secret Scanning with TruffleHog
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for better secret detection
+
+      - name: TruffleHog OSS
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --debug --only-verified
+
+  # Job 3: SAST with Semgrep
+  sast-scan:
+    name: Static Application Security Testing
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    container:
+      image: returntocorp/semgrep
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: |
+          semgrep \
+            --config=auto \
+            --sarif \
+            --output=semgrep.sarif \
+            --verbose \
+            --exclude=node_modules \
+            --exclude=frontend/node_modules \
+            --exclude=dist \
+            --exclude=coverage \
+            .
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+
+  # Job 4: License Compliance
+  license-scan:
+    name: License Compliance Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install license-checker
+        run: npm install -g license-checker
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check backend licenses
+        run: |
+          license-checker --json --out backend-licenses.json --excludePrivatePackages
+          license-checker --summary --excludePrivatePackages
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Check frontend licenses
+        run: |
+          cd frontend
+          license-checker --json --out ../frontend-licenses.json --excludePrivatePackages
+          license-checker --summary --excludePrivatePackages
+
+      - name: Check for prohibited licenses
+        run: |
+          echo "Checking for prohibited licenses..."
+          # Add license validation logic here
+          if grep -i "gpl" backend-licenses.json frontend-licenses.json; then
+            echo "Warning: GPL licenses found"
+          fi
+
+      - name: Upload license results
+        uses: actions/upload-artifact@v3
+        with:
+          name: license-scan-results
+          path: |
+            backend-licenses.json
+            frontend-licenses.json
+
+  # Job 5: Container Security Scanning
+  container-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' # Skip for PRs to avoid resource usage
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: fs-search:security-scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'fs-search:security-scan'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Trivy in table format
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'fs-search:security-scan'
+          format: 'table'
+          exit-code: '0' # Don't fail on vulnerabilities
+
+  # Job 6: OWASP ZAP Dynamic Security Testing
+  dast-scan:
+    name: Dynamic Application Security Testing
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' # Only run on main branch
+    services:
+      typesense:
+        image: typesense/typesense:0.25.0
+        ports:
+          - 8108:8108
+        env:
+          TYPESENSE_API_KEY: test-api-key
+          TYPESENSE_ENABLE_CORS: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start application
+        run: |
+          npm run api &
+          sleep 10
+        env:
+          TYPESENSE_HOST: localhost
+          TYPESENSE_PORT: 8108
+          TYPESENSE_API_KEY: test-api-key
+          NODE_ENV: test
+          PORT: 3001
+
+      - name: Wait for application
+        run: |
+          curl --retry 10 --retry-delay 5 --retry-connrefused http://localhost:3001/api/health
+
+      - name: ZAP Scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'http://localhost:3001'
+          rules_file_name: '.github/zap-rules.conf'
+          cmd_options: '-a'
+
+  # Job 7: Security Configuration Check
+  security-config:
+    name: Security Configuration Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for security configurations
+        run: |
+          echo "Checking security configurations..."
+          
+          # Check if security headers are configured
+          if grep -r "helmet\|csp\|security" src/; then
+            echo "✅ Security headers configured"
+          else
+            echo "❌ Security headers not found"
+            exit 1
+          fi
+          
+          # Check if rate limiting is configured
+          if grep -r "rate.*limit\|express-rate-limit" src/; then
+            echo "✅ Rate limiting configured"
+          else
+            echo "❌ Rate limiting not found"
+            exit 1
+          fi
+          
+          # Check if input validation is configured
+          if grep -r "zod\|joi\|validator" src/; then
+            echo "✅ Input validation configured"
+          else
+            echo "❌ Input validation not found"
+            exit 1
+          fi
+          
+          # Check for environment variable validation
+          if grep -r "process\.env" src/ | grep -v "console.log"; then
+            echo "✅ Environment variables used"
+          fi
+
+      - name: Check Docker security
+        run: |
+          echo "Checking Dockerfile security..."
+          
+          # Check if running as non-root user
+          if grep -i "user" Dockerfile; then
+            echo "✅ Non-root user configured"
+          else
+            echo "⚠️ Consider running as non-root user"
+          fi
+          
+          # Check for secrets in Dockerfile
+          if grep -i "password\|secret\|key" Dockerfile; then
+            echo "❌ Potential secrets in Dockerfile"
+            exit 1
+          else
+            echo "✅ No hardcoded secrets in Dockerfile"
+          fi
+
+  # Job 8: Security Summary Report
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [dependency-scan, secret-scan, sast-scan, license-scan]
+    if: always()
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Generate security summary
+        run: |
+          echo "# Security Scan Summary" > security-summary.md
+          echo "" >> security-summary.md
+          echo "## Scan Results" >> security-summary.md
+          echo "" >> security-summary.md
+          
+          # Check if artifacts exist and summarize
+          if [ -d "dependency-audit-results" ]; then
+            echo "✅ Dependency scan completed" >> security-summary.md
+          else
+            echo "❌ Dependency scan failed" >> security-summary.md
+          fi
+          
+          if [ -d "license-scan-results" ]; then
+            echo "✅ License scan completed" >> security-summary.md
+          else
+            echo "❌ License scan failed" >> security-summary.md
+          fi
+          
+          echo "" >> security-summary.md
+          echo "## Next Steps" >> security-summary.md
+          echo "1. Review any high-severity vulnerabilities" >> security-summary.md
+          echo "2. Update dependencies with known vulnerabilities" >> security-summary.md
+          echo "3. Address any license compliance issues" >> security-summary.md
+          echo "4. Review SAST findings for potential security issues" >> security-summary.md
+          
+          cat security-summary.md
+
+      - name: Upload security summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-summary
+          path: security-summary.md

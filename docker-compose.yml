@@ -1,0 +1,113 @@
+version: '3.8'
+
+services:
+  typesense:
+    image: typesense/typesense:0.25.0
+    container_name: fs-search-typesense
+    ports:
+      - "8108:8108"
+    volumes:
+      - typesense_data:/data
+    environment:
+      TYPESENSE_DATA_DIR: /data
+      TYPESENSE_API_KEY: ${TYPESENSE_API_KEY}
+      TYPESENSE_ENABLE_CORS: ${TYPESENSE_ENABLE_CORS:-false}
+      TYPESENSE_LOG_LEVEL: ${TYPESENSE_LOG_LEVEL:-INFO}
+    command: >
+      --data-dir /data 
+      --api-key ${TYPESENSE_API_KEY}
+      --enable-cors
+      --log-level ${TYPESENSE_LOG_LEVEL}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8108/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - fs-search-network
+
+  fs-search-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fs-search-api
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_PORT: 3001
+      API_AUTH_ENABLED: ${API_AUTH_ENABLED:-false}
+      API_KEY: ${API_KEY}
+      API_CORS_ORIGIN: ${API_CORS_ORIGIN}
+      TYPESENSE_HOST: typesense
+      TYPESENSE_PORT: 8108
+      TYPESENSE_PROTOCOL: http
+      TYPESENSE_API_KEY: ${TYPESENSE_API_KEY}
+      TYPESENSE_COLLECTION: ${TYPESENSE_COLLECTION:-software_stack_components}
+      TYPESENSE_TIMEOUT: ${TYPESENSE_TIMEOUT:-5}
+      TYPESENSE_RETRIES: ${TYPESENSE_RETRIES:-3}
+      # AWS configuration for real-time sync
+      AWS_REGION: ${AWS_REGION:-us-west-2}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_SQS_QUEUE_URL: ${AWS_SQS_QUEUE_URL}
+      AWS_SNS_TOPIC_ARN: ${AWS_SNS_TOPIC_ARN}
+    depends_on:
+      typesense:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - fs-search-network
+    volumes:
+      - ./logs:/app/logs  # Mount logs directory
+
+  # Optional: LocalStack for local AWS services testing
+  localstack:
+    image: localstack/localstack:3.0
+    container_name: fs-search-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs,sns
+      DEBUG: 1
+      DATA_DIR: /tmp/localstack/data
+      PORT_WEB_UI: 8080
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - localstack_data:/tmp/localstack
+    networks:
+      - fs-search-network
+    profiles:
+      - local-aws
+
+  # Optional: Frontend service
+  fs-search-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: fs-search-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_BASE_URL: http://localhost:3001/api
+    depends_on:
+      - fs-search-api
+    restart: unless-stopped
+    networks:
+      - fs-search-network
+    profiles:
+      - frontend
+
+volumes:
+  typesense_data:
+    driver: local
+  localstack_data:
+    driver: local
+
+networks:
+  fs-search-network:
+    driver: bridge

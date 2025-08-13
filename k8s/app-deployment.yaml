@@ -1,0 +1,130 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fs-search-api
+  namespace: fs-search
+  labels:
+    app: fs-search-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: fs-search-api
+  template:
+    metadata:
+      labels:
+        app: fs-search-api
+    spec:
+      containers:
+      - name: fs-search-api
+        image: fs-search:latest  # Build and push your image
+        ports:
+        - name: http
+          containerPort: 3001
+          protocol: TCP
+        env:
+        - name: TYPESENSE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: typesense-secret
+              key: TYPESENSE_API_KEY
+        - name: TYPESENSE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: typesense-config
+              key: TYPESENSE_HOST
+        - name: TYPESENSE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: typesense-config
+              key: TYPESENSE_PORT
+        - name: TYPESENSE_PROTOCOL
+          valueFrom:
+            configMapKeyRef:
+              name: typesense-config
+              key: TYPESENSE_PROTOCOL
+        - name: TYPESENSE_COLLECTION
+          valueFrom:
+            configMapKeyRef:
+              name: typesense-config
+              key: TYPESENSE_COLLECTION
+        - name: TYPESENSE_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: typesense-config
+              key: TYPESENSE_TIMEOUT
+        - name: TYPESENSE_RETRIES
+          valueFrom:
+            configMapKeyRef:
+              name: typesense-config
+              key: TYPESENSE_RETRIES
+        - name: API_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: typesense-config
+              key: API_PORT
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: typesense-config
+              key: NODE_ENV
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: typesense-config
+              key: LOG_LEVEL
+        # SQS/SNS configuration for real-time sync
+        - name: AWS_SQS_QUEUE_URL
+          valueFrom:
+            secretKeyRef:
+              name: aws-secret
+              key: SQS_QUEUE_URL
+              optional: true
+        - name: AWS_SNS_TOPIC_ARN
+          valueFrom:
+            secretKeyRef:
+              name: aws-secret
+              key: SNS_TOPIC_ARN
+              optional: true
+        - name: AWS_REGION
+          value: "us-west-2"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 3001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3001
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fs-search-api-service
+  namespace: fs-search
+  labels:
+    app: fs-search-api
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3001
+    protocol: TCP
+  selector:
+    app: fs-search-api

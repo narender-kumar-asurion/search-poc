@@ -1,0 +1,26 @@
+version: '3.8'
+
+# Development override for docker-compose.yml
+services:
+  typesense:
+    environment:
+      TYPESENSE_LOG_LEVEL: DEBUG
+    volumes:
+      - ./typesense-dev-data:/data  # Use local directory for development
+
+  fs-search-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: DEBUG
+    volumes:
+      - .:/app  # Mount source code for hot reload
+      - /app/node_modules  # Exclude node_modules
+      - ./logs:/app/logs
+    command: npm run dev
+
+  # Enable LocalStack for development
+  localstack:
+    profiles: []  # Remove profile to enable by default

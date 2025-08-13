@@ -1,0 +1,61 @@
+# Docker Compose - Meilisearch Setup
+# Use this as an alternative to Typesense
+
+version: '3.8'
+
+services:
+  # Meilisearch service
+  meilisearch:
+    image: getmeili/meilisearch:v1.5
+    container_name: fs-search-meilisearch
+    ports:
+      - "7700:7700"
+    environment:
+      - MEILI_MASTER_KEY=your-master-key
+      - MEILI_ENV=development
+      - MEILI_LOG_LEVEL=INFO
+      - MEILI_DB_PATH=/meili_data
+    volumes:
+      - meilisearch_data:/meili_data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Application service (configured for Meilisearch)
+  app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: fs-search-app-meilisearch
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - API_PORT=3001
+      - SEARCH_PROVIDER=meilisearch
+      - MEILISEARCH_HOST=meilisearch
+      - MEILISEARCH_PORT=7700
+      - MEILISEARCH_PROTOCOL=http
+      - MEILISEARCH_MASTER_KEY=your-master-key
+      - MEILISEARCH_INDEX=software_stack_components
+      - MEILISEARCH_TIMEOUT=5
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/frontend/node_modules
+    restart: unless-stopped
+
+volumes:
+  meilisearch_data:
+    driver: local
+
+networks:
+  default:
+    name: fs-search-meilisearch-network
